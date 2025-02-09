@@ -1,12 +1,13 @@
 use anyhow::{Context, Result};
 
-use quinn::crypto::rustls::QuicClientConfig;
+use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use quinn::{Endpoint, ServerConfig, TransportConfig};
 
 use rustls::crypto::ring::cipher_suite;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use rustls::pki_types::{ServerName, UnixTime};
 
+use std::sync::atomic::AtomicUsize;
 use std::{
     fs,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -16,8 +17,9 @@ use std::{
 };
 use structopt::StructOpt;
 use tokio::{sync::mpsc, task, time};
+use tracing::{debug, info};
 
-const PACKET_SIZE: usize = 1232;
+const PACKET_SIZE: usize = 1000;
 
 #[derive(StructOpt, Debug, Clone)]
 #[structopt(name = "quic_benchmark")]
@@ -53,41 +55,72 @@ struct Opt {
 
 #[tokio::main]
 async fn main() {
-    let opt = Opt::from_args();
+    let mut opt = Opt::from_args();
+    tracing_subscriber::fmt::init();
 
     match (opt.server_only, opt.client_only) {
         (true, false) => {
-            let _ = run_server(opt).await;
+            let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+            let endpoint = setup_server(&opt, addr).expect("Failed to create server");
+            let _ = run_server(endpoint).await;
         }
         (false, true) => {
             let _ = run_client(&opt).await;
         }
         _ => {
-            let opt2 = opt.clone();
-            tokio::spawn(async move { run_server(opt2).await });
+            let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+            let endpoint = setup_server(&opt, addr).expect("Failed to create server");
+            let addr: SocketAddr = endpoint.local_addr().unwrap();
+            opt.server_address = addr.to_string();
+            tokio::spawn(async move { run_server(endpoint).await });
             time::sleep(Duration::from_secs(1)).await;
             let _ = run_client(&opt).await;
         }
     }
 }
 
-async fn run_server(opt: Opt) -> Result<()> {
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
-    let endpoint = setup_server(&opt, addr).expect("Failed to create server");
-
-    println!("Server listening on {}", endpoint.local_addr().unwrap());
-
-    loop {
-        time::sleep(Duration::from_secs(60)).await;
+async fn run_server(endpoint: Endpoint) -> Result<()> {
+    info!("Server listening on {}", endpoint.local_addr().unwrap());
+    let total_received = Arc::new(AtomicUsize::new(0));
+    while let Some(handshake) = endpoint.accept().await {
+        let total_received = total_received.clone();
+        tokio::spawn(async move {
+            if let Err(e) = handle(handshake, total_received).await {
+                info!("connection lost: {:#}", e);
+            }
+        });
     }
+
+    Ok(())
+}
+
+async fn handle(handshake: quinn::Incoming, total_received: Arc<AtomicUsize>) -> Result<()> {
+    let connection = handshake.await.context("handshake failed")?;
+    debug!("{} connected", connection.remote_address());
+    tokio::try_join!(drive_datagram(connection.clone(), total_received),)?;
+    Ok(())
+}
+
+async fn drive_datagram(
+    connection: quinn::Connection,
+    total_received: Arc<AtomicUsize>,
+) -> Result<()> {
+    while let Ok(_datagram) = connection.read_datagram().await {
+        total_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
 }
 
 async fn run_client(opt: &Opt) -> Result<()> {
-    let server_addr: SocketAddr = opt
+    let mut server_addr: SocketAddr = opt
         .server_address
         .parse()
         .expect("Invalid server address format");
 
+    if server_addr.ip().is_unspecified() {
+        server_addr.set_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+    }
+    info!("Connecting to server {server_addr:?}");
     let endpoint = setup_client().expect("Failed to create client");
 
     let conn = endpoint
@@ -122,7 +155,7 @@ async fn run_client(opt: &Opt) -> Result<()> {
     }
 
     let duration = start.elapsed().as_secs_f64();
-    println!(
+    info!(
         "Sent {} packets in {:.2} seconds ({:.2} packets/sec)",
         total_sent,
         duration,
@@ -153,10 +186,31 @@ fn setup_server(opt: &Opt, addr: SocketAddr) -> Result<Endpoint, Box<dyn std::er
         }
     };
 
+    let default_provider = rustls::crypto::ring::default_provider();
+    let provider = rustls::crypto::CryptoProvider {
+        cipher_suites: [
+            cipher_suite::TLS13_AES_128_GCM_SHA256,
+            cipher_suite::TLS13_AES_256_GCM_SHA384,
+            cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
+        ]
+        .into(),
+        ..default_provider
+    };
+
+    let mut crypto = rustls::ServerConfig::builder_with_provider(provider.into())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(cert, key.into())
+        .unwrap();
+    crypto.alpn_protocols = vec![b"perf".to_vec()];
+
+    let crypto = Arc::new(QuicServerConfig::try_from(crypto)?);
+
     let mut transport_config = TransportConfig::default();
     transport_config.datagram_receive_buffer_size(Some(PACKET_SIZE * 1024 * 1024));
 
-    let mut server_config = ServerConfig::with_single_cert(cert, key.into())?;
+    let mut server_config = ServerConfig::with_crypto(crypto);
     server_config.transport = Arc::new(transport_config);
 
     let endpoint = Endpoint::server(server_config, addr)?;
@@ -218,9 +272,15 @@ impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
 }
 
 fn setup_client() -> Result<Endpoint, Box<dyn std::error::Error>> {
+    info!("Setting up client");
     let default_provider = rustls::crypto::ring::default_provider();
     let provider = Arc::new(rustls::crypto::CryptoProvider {
-        cipher_suites: [cipher_suite::TLS13_AES_256_GCM_SHA384].into(),
+        cipher_suites: [
+            cipher_suite::TLS13_AES_128_GCM_SHA256,
+            cipher_suite::TLS13_AES_256_GCM_SHA384,
+            cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
+        ]
+        .into(),
         ..default_provider
     });
 
@@ -235,11 +295,15 @@ fn setup_client() -> Result<Endpoint, Box<dyn std::error::Error>> {
         .with_no_client_auth();
     crypto.alpn_protocols = vec![b"perf".to_vec()];
 
+    info!("Setting up QuicClientConfig...");
+
     let crypto = Arc::new(QuicClientConfig::try_from(crypto)?);
 
     let mut client_config = quinn::ClientConfig::new(crypto);
 
     client_config.transport_config(Arc::new(transport_config));
+
+    info!("Creating client endpoint...");
 
     let mut endpoint = Endpoint::client(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))?;
     endpoint.set_default_client_config(client_config);
