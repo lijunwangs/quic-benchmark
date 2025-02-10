@@ -33,7 +33,7 @@ struct Opt {
     client_only: bool,
 
     /// Server address (IP:port) for client mode
-    #[structopt(long, default_value = "127.0.0.1:4433")]
+    #[structopt(long, default_value = "0.0.0.0:11228")]
     server_address: String,
 
     /// Number of sender threads
@@ -60,7 +60,10 @@ async fn main() {
 
     match (opt.server_only, opt.client_only) {
         (true, false) => {
-            let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+            let addr = opt
+                .server_address
+                .parse::<SocketAddr>()
+                .expect("Exepected correct server address in IP:port format"); // SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
             let endpoint = setup_server(&opt, addr).expect("Failed to create server");
             let _ = run_server(endpoint).await;
         }
