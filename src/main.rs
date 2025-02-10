@@ -86,6 +86,10 @@ async fn run_server(endpoint: Endpoint) -> Result<()> {
     info!("Server listening on {}", endpoint.local_addr().unwrap());
     let total_received = Arc::new(AtomicUsize::new(0));
     while let Some(handshake) = endpoint.accept().await {
+        info!(
+            "Got incoming connection from {:?}",
+            handshake.remote_address()
+        );
         let total_received = total_received.clone();
         tokio::spawn(async move {
             if let Err(e) = handle(handshake, total_received).await {
