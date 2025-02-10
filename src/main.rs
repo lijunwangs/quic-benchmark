@@ -6,8 +6,9 @@ use quinn::{Endpoint, ServerConfig, TransportConfig};
 use rustls::crypto::ring::cipher_suite;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use rustls::pki_types::{ServerName, UnixTime};
+use tokio::time::sleep_until;
 
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
     fs,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -16,7 +17,11 @@ use std::{
     time::{Duration, Instant},
 };
 use structopt::StructOpt;
-use tokio::{sync::mpsc, task, time};
+use tokio::{
+    sync::mpsc,
+    task,
+    time::{self, Instant as AsyncInstant},
+};
 use tracing::{debug, info};
 
 const PACKET_SIZE: usize = 1000;
@@ -82,9 +87,24 @@ async fn main() {
     }
 }
 
+async fn report_stats(total_received: Arc<AtomicUsize>) {
+    let mut last_datapoint = AsyncInstant::now();
+    loop {
+        if last_datapoint.elapsed().as_secs() >= 5 {
+            let total_received = total_received.swap(0, Ordering::Relaxed);
+            info!("Received packets: {total_received}");
+            last_datapoint = AsyncInstant::now();
+        }
+        sleep_until(last_datapoint.checked_add(Duration::from_secs(5)).unwrap()).await;
+    }
+}
+
 async fn run_server(endpoint: Endpoint) -> Result<()> {
     info!("Server listening on {}", endpoint.local_addr().unwrap());
     let total_received = Arc::new(AtomicUsize::new(0));
+
+    tokio::spawn(report_stats(total_received.clone()));
+
     while let Some(handshake) = endpoint.accept().await {
         info!(
             "Got incoming connection from {:?}",
