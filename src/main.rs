@@ -74,7 +74,6 @@ async fn main() {
         }
         (false, true) => {
             let _ = run_client(&opt).await;
-            time::sleep(Duration::from_secs(100)).await;
         }
         _ => {
             let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
