@@ -212,6 +212,13 @@ async fn run_client(opt: &Opt) -> Result<()> {
         total_sent as f64 / duration
     );
 
+    while let Some(handshake) = endpoint.accept().await {
+        info!(
+            "Got incoming connection from {:?}",
+            handshake.remote_address()
+        );
+    }
+
     Ok(())
 }
 
