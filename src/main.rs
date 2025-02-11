@@ -74,8 +74,12 @@ async fn main() {
                 .expect("Exepected correct server address in IP:port format"); // SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
             let endpoints = setup_server(&opt, addr, 8).expect("Failed to create server");
             let mut handles = Vec::new();
+            let total_received = Arc::new(AtomicUsize::new(0));
+
+            tokio::spawn(report_stats(total_received.clone()));
+
             for endpoint in endpoints {
-                let task = tokio::spawn(run_server(endpoint));
+                let task = tokio::spawn(run_server(endpoint, total_received.clone()));
                 handles.push(task);
             }
 
@@ -92,8 +96,11 @@ async fn main() {
             let addr: SocketAddr = endpoints[0].local_addr().unwrap();
             opt.server_address = addr.to_string();
             let mut handles = Vec::new();
+            let total_received = Arc::new(AtomicUsize::new(0));
+
+            tokio::spawn(report_stats(total_received.clone()));
             for endpoint in endpoints {
-                let task = tokio::spawn(run_server(endpoint));
+                let task = tokio::spawn(run_server(endpoint, total_received.clone()));
                 handles.push(task);
             }
 
@@ -101,7 +108,7 @@ async fn main() {
             let _ = run_client(&opt).await;
             for handle in handles {
                 let _ = handle.await;
-            }            
+            }
         }
     }
 }
@@ -118,11 +125,8 @@ async fn report_stats(total_received: Arc<AtomicUsize>) {
     }
 }
 
-async fn run_server(endpoint: Endpoint) -> Result<()> {
+async fn run_server(endpoint: Endpoint, total_received: Arc<AtomicUsize>) -> Result<()> {
     info!("Server listening on {}", endpoint.local_addr().unwrap());
-    let total_received = Arc::new(AtomicUsize::new(0));
-
-    tokio::spawn(report_stats(total_received.clone()));
 
     while let Some(handshake) = endpoint.accept().await {
         info!(
