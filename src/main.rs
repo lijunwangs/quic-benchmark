@@ -73,6 +73,7 @@ async fn main() {
             let _ = run_server(endpoint).await;
         }
         (false, true) => {
+            time::sleep(Duration::from_secs(1)).await;
             let _ = run_client(&opt).await;
         }
         _ => {
