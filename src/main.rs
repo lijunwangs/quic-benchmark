@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
-use quinn::{Endpoint, ServerConfig, TransportConfig};
+use quinn::{Connection, Endpoint, ServerConfig, TransportConfig};
 
 use rustls::crypto::ring::cipher_suite;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
@@ -168,14 +168,14 @@ async fn run_client(opt: &Opt) -> Result<()> {
     let start = Instant::now();
     let (tx, mut rx) = mpsc::channel::<usize>(opt.num_threads);
 
+    let mut conns: Vec<Connection> = Vec::default();
     for _ in 0..opt.num_threads {
         let conn = endpoint
             .connect(server_addr, "localhost")
             .expect("Failed to connect")
             .await
             .expect("Connection failed");
-
-        //let conn = conn.clone();
+        conns.push(conn.clone());
         let packet = packet.clone();
         let tx = tx.clone();
         let num_packets = opt.num_packets;
