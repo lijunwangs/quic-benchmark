@@ -22,7 +22,7 @@ use tokio::{
     task,
     time::{self, Instant as AsyncInstant},
 };
-use tracing::{debug, info};
+use tracing::info;
 
 const PACKET_SIZE: usize = 1000;
 
@@ -123,7 +123,7 @@ async fn run_server(endpoint: Endpoint) -> Result<()> {
 
 async fn handle(handshake: quinn::Incoming, total_received: Arc<AtomicUsize>) -> Result<()> {
     let connection = handshake.await.context("handshake failed")?;
-    debug!("{} connected", connection.remote_address());
+    info!("{} connected", connection.remote_address());
     tokio::try_join!(drive_datagram(connection.clone(), total_received),)?;
     Ok(())
 }
@@ -132,8 +132,17 @@ async fn drive_datagram(
     connection: quinn::Connection,
     total_received: Arc<AtomicUsize>,
 ) -> Result<()> {
-    while let Ok(_datagram) = connection.read_datagram().await {
-        total_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    loop {
+        let result = connection.read_datagram().await;
+        match result {
+            Ok(_) => {
+                total_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Err(err) => {
+                info!("Got error {err:?}");
+                break;
+            }
+        }
     }
     Ok(())
 }
