@@ -18,7 +18,6 @@ use std::{
 };
 use structopt::StructOpt;
 use tokio::{
-    sync::mpsc,
     task,
     time::{self, Instant as AsyncInstant},
 };
@@ -166,9 +165,9 @@ async fn run_client(opt: &Opt) -> Result<()> {
 
     let packet = vec![0; PACKET_SIZE];
     let start = Instant::now();
-    let (tx, mut rx) = mpsc::channel::<usize>(opt.num_threads);
 
     let mut conns: Vec<Connection> = Vec::default();
+    let total_sent = Arc::new(AtomicUsize::default());
     for _ in 0..opt.num_threads {
         let conn = endpoint
             .connect(server_addr, "localhost")
@@ -177,15 +176,14 @@ async fn run_client(opt: &Opt) -> Result<()> {
             .expect("Connection failed");
         conns.push(conn.clone());
         let packet = packet.clone();
-        let tx = tx.clone();
         let num_packets = opt.num_packets;
+        let total_sent = total_sent.clone();
         task::spawn(async move {
-            let mut sent = 0;
             for _ in 0..num_packets {
                 let result = conn.send_datagram_wait(packet.clone().into()).await;
                 match result {
                     Ok(_) => {
-                        sent += 1;
+                        total_sent.fetch_add(1, Ordering::Relaxed);
                         trace!("Sent datagram?");
                         task::yield_now().await;
                     }
@@ -194,17 +192,11 @@ async fn run_client(opt: &Opt) -> Result<()> {
                     }
                 }
             }
-            tx.send(sent).await.unwrap();
         });
     }
 
-    drop(tx);
-    let mut total_sent = 0;
-    while let Some(sent) = rx.recv().await {
-        total_sent += sent;
-    }
-
     let duration = start.elapsed().as_secs_f64();
+    let total_sent = total_sent.load(Ordering::Relaxed);
     info!(
         "Sent (written to buffer) {} packets in {:.2} seconds ({:.2} packets/sec)",
         total_sent,
