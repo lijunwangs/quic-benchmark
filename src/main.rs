@@ -175,7 +175,7 @@ async fn run_client(opt: &Opt) -> Result<()> {
             .await
             .expect("Connection failed");
 
-        let conn = conn.clone();
+        //let conn = conn.clone();
         let packet = packet.clone();
         let tx = tx.clone();
         let num_packets = opt.num_packets;
