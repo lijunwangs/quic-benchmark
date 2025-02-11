@@ -72,6 +72,10 @@ async fn main() {
                 .server_address
                 .parse::<SocketAddr>()
                 .expect("Exepected correct server address in IP:port format"); // SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+
+            let runtime = rt("quicbench".to_string());
+            let _guard = runtime.enter();
+
             let endpoints = setup_server(&opt, addr, 8).expect("Failed to create server");
             let mut handles = Vec::new();
             let total_received = Arc::new(AtomicUsize::new(0));
@@ -95,9 +99,11 @@ async fn main() {
             let endpoints = setup_server(&opt, addr, 8).expect("Failed to create server");
             let addr: SocketAddr = endpoints[0].local_addr().unwrap();
             opt.server_address = addr.to_string();
+            let runtime = rt("quicbench".to_string());
+            let _guard = runtime.enter();
+
             let mut handles = Vec::new();
             let total_received = Arc::new(AtomicUsize::new(0));
-
             tokio::spawn(report_stats(total_received.clone()));
             for endpoint in endpoints {
                 let task = tokio::spawn(run_server(endpoint, total_received.clone()));
@@ -297,8 +303,6 @@ fn setup_server(
     server_config.transport = Arc::new(transport_config);
 
     let mut endpoints = Vec::new();
-    let runtime = rt("quicbench".to_string());
-    let _guard = runtime.enter();
 
     let (_port, mut sockets) = solana_net_utils::multi_bind_in_range(
         addr.ip(),
