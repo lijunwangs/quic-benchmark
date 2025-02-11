@@ -1,27 +1,31 @@
-use anyhow::{Context, Result};
-
-use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
-use quinn::{Connection, Endpoint, ServerConfig, TransportConfig};
-
-use rustls::crypto::ring::cipher_suite;
-use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
-use rustls::pki_types::{ServerName, UnixTime};
-use tokio::time::sleep_until;
-
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{
-    fs,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant},
+use {
+    anyhow::{Context, Result},
+    quinn::{
+        crypto::rustls::{QuicClientConfig, QuicServerConfig},
+        Connection, Endpoint, EndpointConfig, ServerConfig, TokioRuntime, TransportConfig,
+    },
+    rustls::{
+        crypto::ring::cipher_suite,
+        pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, UnixTime},
+    },
+    std::{
+        fs,
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        path::PathBuf,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        time::{Duration, Instant},
+    },
+    structopt::StructOpt,
+    tokio::{
+        runtime::Runtime,
+        task,
+        time::{self, sleep_until, Instant as AsyncInstant},
+    },
+    tracing::*,
 };
-use structopt::StructOpt;
-use tokio::{
-    task,
-    time::{self, Instant as AsyncInstant},
-};
-use tracing::*;
 
 const PACKET_SIZE: usize = 1000;
 
@@ -68,20 +72,36 @@ async fn main() {
                 .server_address
                 .parse::<SocketAddr>()
                 .expect("Exepected correct server address in IP:port format"); // SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
-            let endpoint = setup_server(&opt, addr).expect("Failed to create server");
-            let _ = run_server(endpoint).await;
+            let endpoints = setup_server(&opt, addr, 8).expect("Failed to create server");
+            let mut handles = Vec::new();
+            for endpoint in endpoints {
+                let task = tokio::spawn(run_server(endpoint));
+                handles.push(task);
+            }
+
+            for handle in handles {
+                let _ = handle.await;
+            }
         }
         (false, true) => {
             let _ = run_client(&opt).await;
         }
         _ => {
             let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
-            let endpoint = setup_server(&opt, addr).expect("Failed to create server");
-            let addr: SocketAddr = endpoint.local_addr().unwrap();
+            let endpoints = setup_server(&opt, addr, 8).expect("Failed to create server");
+            let addr: SocketAddr = endpoints[0].local_addr().unwrap();
             opt.server_address = addr.to_string();
-            tokio::spawn(async move { run_server(endpoint).await });
+            let mut handles = Vec::new();
+            for endpoint in endpoints {
+                let task = tokio::spawn(run_server(endpoint));
+                handles.push(task);
+            }
+
             time::sleep(Duration::from_secs(1)).await;
             let _ = run_client(&opt).await;
+            for handle in handles {
+                let _ = handle.await;
+            }            
         }
     }
 }
@@ -212,7 +232,19 @@ async fn run_client(opt: &Opt) -> Result<()> {
     Ok(())
 }
 
-fn setup_server(opt: &Opt, addr: SocketAddr) -> Result<Endpoint, Box<dyn std::error::Error>> {
+pub fn rt(name: String) -> Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .thread_name(name)
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+fn setup_server(
+    opt: &Opt,
+    addr: SocketAddr,
+    count: usize,
+) -> Result<Vec<Endpoint>, Box<dyn std::error::Error>> {
     let (key, cert) = match (&opt.key, &opt.cert) {
         (Some(key), Some(cert)) => {
             let key = fs::read(key).context("reading key")?;
@@ -260,8 +292,28 @@ fn setup_server(opt: &Opt, addr: SocketAddr) -> Result<Endpoint, Box<dyn std::er
     let mut server_config = ServerConfig::with_crypto(crypto);
     server_config.transport = Arc::new(transport_config);
 
-    let endpoint = Endpoint::server(server_config, addr)?;
-    Ok(endpoint)
+    let mut endpoints = Vec::new();
+    let runtime = rt("quicbench".to_string());
+    let _guard = runtime.enter();
+
+    let (_port, mut sockets) = solana_net_utils::multi_bind_in_range(
+        addr.ip(),
+        (addr.port(), addr.port() + count as u16),
+        count,
+    )
+    .unwrap();
+
+    for socket in sockets.drain(..) {
+        let endpoint = Endpoint::new(
+            EndpointConfig::default(),
+            Some(server_config.clone()),
+            socket,
+            Arc::new(TokioRuntime),
+        )?;
+        endpoints.push(endpoint);
+    }
+
+    Ok(endpoints)
 }
 
 #[derive(Debug)]
