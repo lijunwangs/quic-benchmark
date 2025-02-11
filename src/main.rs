@@ -161,15 +161,15 @@ async fn run_client(opt: &Opt) -> Result<()> {
         server_addr.set_ip(IpAddr::V4(Ipv4Addr::new(145, 40, 90, 189)));
     }
     info!("Connecting to server {server_addr:?}");
-    let endpoint = setup_client().expect("Failed to create client");
+    let endpoints = setup_client(opt.num_threads).expect("Failed to create client");
 
     let packet = vec![0; PACKET_SIZE];
     let start = Instant::now();
 
     let mut conns: Vec<Connection> = Vec::default();
     let total_sent = Arc::new(AtomicUsize::default());
-    for _ in 0..opt.num_threads {
-        let conn = endpoint
+    for i in 0..opt.num_threads {
+        let conn = endpoints[i]
             .connect(server_addr, "localhost")
             .expect("Failed to connect")
             .await
@@ -180,6 +180,7 @@ async fn run_client(opt: &Opt) -> Result<()> {
         let total_sent = total_sent.clone();
         task::spawn(async move {
             for _ in 0..num_packets {
+                // the following actually queue the datagrams without really sending it.
                 let result = conn.send_datagram_wait(packet.clone().into()).await;
                 match result {
                     Ok(_) => {
@@ -204,7 +205,10 @@ async fn run_client(opt: &Opt) -> Result<()> {
         total_sent as f64 / duration
     );
 
-    endpoint.wait_idle().await;
+    // the following give the async sent datagrams to be sent out actually.
+    for i in 0..opt.num_threads {
+        endpoints[i].wait_idle().await;
+    }
     Ok(())
 }
 
@@ -314,7 +318,7 @@ impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
     }
 }
 
-fn setup_client() -> Result<Endpoint, Box<dyn std::error::Error>> {
+fn setup_client(count: usize) -> Result<Vec<Endpoint>, Box<dyn std::error::Error>> {
     info!("Setting up client");
     let default_provider = rustls::crypto::ring::default_provider();
     let provider = Arc::new(rustls::crypto::CryptoProvider {
@@ -348,7 +352,12 @@ fn setup_client() -> Result<Endpoint, Box<dyn std::error::Error>> {
 
     info!("Creating client endpoint...");
 
-    let mut endpoint = Endpoint::client(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))?;
-    endpoint.set_default_client_config(client_config);
-    Ok(endpoint)
+    let mut endpoints = Vec::new();
+
+    for _ in 0..count {
+        let mut endpoint = Endpoint::client(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))?;
+        endpoint.set_default_client_config(client_config.clone());
+        endpoints.push(endpoint);
+    }
+    Ok(endpoints)
 }
