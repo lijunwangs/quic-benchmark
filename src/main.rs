@@ -137,6 +137,7 @@ async fn drive_datagram(
         match result {
             Ok(_) => {
                 total_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                info!("Received a datagram!");
             }
             Err(err) => {
                 info!(
