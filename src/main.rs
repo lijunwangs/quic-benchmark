@@ -139,7 +139,10 @@ async fn drive_datagram(
                 total_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             Err(err) => {
-                info!("Got error {err:?}");
+                info!(
+                    "Got error {err:?} for connection from {:?}",
+                    connection.remote_address()
+                );
                 break;
             }
         }
