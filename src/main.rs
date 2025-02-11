@@ -164,17 +164,17 @@ async fn run_client(opt: &Opt) -> Result<()> {
     info!("Connecting to server {server_addr:?}");
     let endpoint = setup_client().expect("Failed to create client");
 
-    let conn = endpoint
-        .connect(server_addr, "localhost")
-        .expect("Failed to connect")
-        .await
-        .expect("Connection failed");
-
     let packet = vec![0; PACKET_SIZE];
     let start = Instant::now();
     let (tx, mut rx) = mpsc::channel::<usize>(opt.num_threads);
 
     for _ in 0..opt.num_threads {
+        let conn = endpoint
+            .connect(server_addr, "localhost")
+            .expect("Failed to connect")
+            .await
+            .expect("Connection failed");
+
         let conn = conn.clone();
         let packet = packet.clone();
         let tx = tx.clone();
@@ -206,18 +206,11 @@ async fn run_client(opt: &Opt) -> Result<()> {
 
     let duration = start.elapsed().as_secs_f64();
     info!(
-        "Sent {} packets in {:.2} seconds ({:.2} packets/sec)",
+        "Sent (written to buffer) {} packets in {:.2} seconds ({:.2} packets/sec)",
         total_sent,
         duration,
         total_sent as f64 / duration
     );
-
-    // while let Some(handshake) = endpoint.accept().await {
-    //     info!(
-    //         "Got incoming connection from {:?}",
-    //         handshake.remote_address()
-    //     );
-    // }
 
     endpoint.wait_idle().await;
     Ok(())
