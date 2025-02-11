@@ -181,8 +181,16 @@ async fn run_client(opt: &Opt) -> Result<()> {
         task::spawn(async move {
             let mut sent = 0;
             for _ in 0..num_packets {
-                conn.send_datagram_wait(packet.clone().into()).await.unwrap();
-                sent += 1;
+                let result = conn.send_datagram_wait(packet.clone().into()).await;
+                match result {
+                    Ok(_) => {
+                        sent += 1;
+                        info!("Sent datagram?");
+                    }
+                    Err(err) => {
+                        error!("Send datagram error {err:?}");
+                    }
+                }
             }
             tx.send(sent).await.unwrap();
         });
