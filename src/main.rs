@@ -158,7 +158,8 @@ async fn run_client(opt: &Opt) -> Result<()> {
         .expect("Invalid server address format");
 
     if server_addr.ip().is_unspecified() {
-        server_addr.set_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+        //server_addr.set_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+        server_addr.set_ip(IpAddr::V4(Ipv4Addr::new(145, 40, 90, 189)));
     }
     info!("Connecting to server {server_addr:?}");
     let endpoint = setup_client().expect("Failed to create client");
