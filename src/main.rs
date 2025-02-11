@@ -187,7 +187,6 @@ async fn run_client(opt: &Opt) -> Result<()> {
                     Ok(_) => {
                         sent += 1;
                         info!("Sent datagram?");
-                        task::yield_now().await;
                     }
                     Err(err) => {
                         error!("Send datagram error {err:?}");
