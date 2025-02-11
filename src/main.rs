@@ -73,7 +73,6 @@ async fn main() {
             let _ = run_server(endpoint).await;
         }
         (false, true) => {
-            time::sleep(Duration::from_secs(1)).await;
             let _ = run_client(&opt).await;
         }
         _ => {
@@ -188,6 +187,7 @@ async fn run_client(opt: &Opt) -> Result<()> {
                     Ok(_) => {
                         sent += 1;
                         info!("Sent datagram?");
+                        task::yield_now().await;
                     }
                     Err(err) => {
                         error!("Send datagram error {err:?}");
