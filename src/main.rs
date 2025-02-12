@@ -1,5 +1,5 @@
 use {
-    anyhow::{Context, Result},
+    anyhow::{Context, Error, Result},
     quinn::{
         crypto::rustls::{QuicClientConfig, QuicServerConfig},
         Connection, Endpoint, EndpointConfig, ServerConfig, TokioRuntime, TransportConfig,
@@ -21,7 +21,7 @@ use {
     structopt::StructOpt,
     tokio::{
         runtime::Runtime,
-        task,
+        task::{self, JoinHandle},
         time::{self, sleep_until, Instant as AsyncInstant},
     },
     tracing::*,
@@ -52,6 +52,10 @@ struct Opt {
     #[structopt(long, default_value = "10000")]
     num_packets: usize,
 
+    /// Number of endpoints on server side
+    #[structopt(long, default_value = "8")]
+    num_endpoints: usize,
+
     /// Server certificate
     #[structopt(long)]
     cert: Option<PathBuf>,
@@ -61,6 +65,39 @@ struct Opt {
     key: Option<PathBuf>,
 }
 
+struct Server {
+    #[allow(dead_code)]
+    runtime: Runtime,
+
+    handles: Vec<JoinHandle<Result<(), Error>>>,
+}
+
+impl Server {
+    fn create_server(opt: &Opt, addr: SocketAddr) -> Self {
+        let runtime = rt("quicbench".to_string());
+        let _guard = runtime.enter();
+
+        let endpoints =
+            setup_server(&opt, addr, opt.num_endpoints).expect("Failed to create server");
+        let mut handles = Vec::new();
+        let total_received = Arc::new(AtomicUsize::new(0));
+
+        tokio::spawn(report_stats(total_received.clone()));
+
+        for endpoint in endpoints {
+            let task = tokio::spawn(run_server(endpoint, total_received.clone()));
+            handles.push(task);
+        }
+
+        Self { runtime, handles }
+    }
+
+    async fn join(self) {
+        for handle in self.handles {
+            let _ = handle.await;
+        }
+    }
+}
 #[tokio::main]
 async fn main() {
     let mut opt = Opt::from_args();
@@ -73,34 +110,21 @@ async fn main() {
                 .parse::<SocketAddr>()
                 .expect("Exepected correct server address in IP:port format"); // SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
 
-            let runtime = rt("quicbench".to_string());
-            let _guard = runtime.enter();
-
-            let endpoints = setup_server(&opt, addr, 8).expect("Failed to create server");
-            let mut handles = Vec::new();
-            let total_received = Arc::new(AtomicUsize::new(0));
-
-            tokio::spawn(report_stats(total_received.clone()));
-
-            for endpoint in endpoints {
-                let task = tokio::spawn(run_server(endpoint, total_received.clone()));
-                handles.push(task);
-            }
-
-            for handle in handles {
-                let _ = handle.await;
-            }
+            let server = Server::create_server(&opt, addr);
+            server.join().await;
         }
         (false, true) => {
             let _ = run_client(&opt).await;
         }
         _ => {
             let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
-            let endpoints = setup_server(&opt, addr, 8).expect("Failed to create server");
-            let addr: SocketAddr = endpoints[0].local_addr().unwrap();
-            opt.server_address = addr.to_string();
             let runtime = rt("quicbench".to_string());
             let _guard = runtime.enter();
+
+            let endpoints =
+                setup_server(&opt, addr, opt.num_endpoints).expect("Failed to create server");
+            let addr: SocketAddr = endpoints[0].local_addr().unwrap();
+            opt.server_address = addr.to_string();
 
             let mut handles = Vec::new();
             let total_received = Arc::new(AtomicUsize::new(0));
