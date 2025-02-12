@@ -70,6 +70,7 @@ struct Server {
     runtime: Runtime,
 
     handles: Vec<JoinHandle<Result<(), Error>>>,
+    local_address: SocketAddr,
 }
 
 impl Server {
@@ -84,12 +85,13 @@ impl Server {
 
         tokio::spawn(report_stats(total_received.clone()));
 
+        let local_address = endpoints[0].local_addr().unwrap();
         for endpoint in endpoints {
             let task = tokio::spawn(run_server(endpoint, total_received.clone()));
             handles.push(task);
         }
 
-        Self { runtime, handles }
+        Self { runtime, handles, local_address }
     }
 
     async fn join(self) {
@@ -118,27 +120,14 @@ async fn main() {
         }
         _ => {
             let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
-            let runtime = rt("quicbench".to_string());
-            let _guard = runtime.enter();
-
-            let endpoints =
-                setup_server(&opt, addr, opt.num_endpoints).expect("Failed to create server");
-            let addr: SocketAddr = endpoints[0].local_addr().unwrap();
             opt.server_address = addr.to_string();
 
-            let mut handles = Vec::new();
-            let total_received = Arc::new(AtomicUsize::new(0));
-            tokio::spawn(report_stats(total_received.clone()));
-            for endpoint in endpoints {
-                let task = tokio::spawn(run_server(endpoint, total_received.clone()));
-                handles.push(task);
-            }
+            let server = Server::create_server(&opt, addr);
 
+            opt.server_address =  server.local_address.to_string();
             time::sleep(Duration::from_secs(1)).await;
             let _ = run_client(&opt).await;
-            for handle in handles {
-                let _ = handle.await;
-            }
+            server.join().await;
         }
     }
 }
@@ -211,8 +200,8 @@ async fn run_client(opt: &Opt) -> Result<()> {
         .expect("Invalid server address format");
 
     if server_addr.ip().is_unspecified() {
-        //server_addr.set_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
-        server_addr.set_ip(IpAddr::V4(Ipv4Addr::new(145, 40, 90, 189)));
+        server_addr.set_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+        //server_addr.set_ip(IpAddr::V4(Ipv4Addr::new(145, 40, 90, 189)));
     }
     info!("Connecting to server {server_addr:?}");
     let endpoints = setup_client(opt.num_threads).expect("Failed to create client");
